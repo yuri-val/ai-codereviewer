@@ -10,13 +10,13 @@ inputs:
   OPENAI_API_MODEL:
     description: "OpenAI API model."
     required: false
-    default: "gpt-4"
+    default: "gpt-4o"
   exclude:
     description: "Glob patterns to exclude files from the diff analysis"
     required: false
     default: ""
 runs:
-  using: "node16"
+  using: "node20"
   main: "dist/index.js"
 branding:
   icon: "aperture"
