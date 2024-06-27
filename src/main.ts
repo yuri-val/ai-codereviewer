@@ -3,7 +3,7 @@ import * as core from "@actions/core";
 import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
 import parseDiff, { Chunk, File } from "parse-diff";
-import minimatch from "minimatch";
+import { minimatch } from "minimatch"; // Ensure minimatch is imported correctly
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
