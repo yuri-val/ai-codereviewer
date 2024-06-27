@@ -73,6 +73,7 @@ async function analyzeCode(
     if (file.to === "/dev/null") continue; // Ignore deleted files
     for (const chunk of file.chunks) {
       const prompt = createPrompt(file, chunk, prDetails);
+      console.log(prompt);
       const aiResponse = await getAIResponse(prompt);
       if (aiResponse) {
         const newComments = createComment(file, chunk, aiResponse);
@@ -133,9 +134,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      ...(OPENAI_API_MODEL.includes("gpt-4")
-        ? { response_format: { type: "json_object" } }
-        : {}),
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
