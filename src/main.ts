@@ -24,21 +24,28 @@ interface PRDetails {
 }
 
 async function getPRDetails(): Promise<PRDetails> {
-  const { repository, number } = JSON.parse(
-    readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8")
-  );
-  const prResponse = await octokit.pulls.get({
-    owner: repository.owner.login,
-    repo: repository.name,
-    pull_number: number,
-  });
-  return {
-    owner: repository.owner.login,
-    repo: repository.name,
-    pull_number: number,
-    title: prResponse.data.title ?? "",
-    description: prResponse.data.body ?? "",
-  };
+  try {
+    const eventData = JSON.parse(
+      readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8")
+    );
+    const prResponse = await octokit.pulls.get({
+      owner: eventData.repository.owner.login,
+      repo: eventData.repository.name,
+      pull_number: eventData.number,
+    });
+    return {
+      owner: eventData.repository.owner.login,
+      repo: eventData.repository.name,
+      pull_number: eventData.number,
+      title: prResponse.data.title ?? "",
+      description: prResponse.data.body ?? "",
+    };
+  } catch (error) {
+    console.error("Error parsing JSON:", error);
+    console.log(process.env.GITHUB_EVENT_PATH)
+    console.log(readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8"))
+    throw error;
+  }
 }
 
 async function getDiff(
@@ -126,7 +133,6 @@ async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      // return JSON if the model supports it:
       ...(OPENAI_API_MODEL === "gpt-4-1106-preview"
         ? { response_format: { type: "json_object" } }
         : {}),
