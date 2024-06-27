@@ -133,7 +133,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      ...(OPENAI_API_MODEL === "gpt-4-1106-preview"
+      ...(OPENAI_API_MODEL.includes("gpt-4")
         ? { response_format: { type: "json_object" } }
         : {}),
       messages: [
