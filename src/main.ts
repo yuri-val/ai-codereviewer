@@ -222,7 +222,11 @@ async function createReviewComment(
   pull_number: number,
   comments: Array<{ body: string; path: string; line: number }>,
   batchSize = 10,
+  retryCount = 0,
 ): Promise<void> {
+  const maxRetries = 5;
+  const baseDelay = 1000; // 1 second
+
   for (let i = 0; i < comments.length; i += batchSize) {
     const batch = comments.slice(i, i + batchSize);
     try {
@@ -234,19 +238,27 @@ async function createReviewComment(
         event: "COMMENT",
       });
     } catch (error) {
-      if (error instanceof Error && "status" in error && error.status === 422) {
+      if (
+        error instanceof Error &&
+        "status" in error &&
+        (error.status === 422 || error.status === 403)
+      ) {
         console.log(
-          `Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...\nERROR:\n${error}`,
+          `Error creating review. batchSize = ${batchSize}. Retrying...\nERROR:\n${error}`,
         );
-        await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second
-        if (batchSize > 1) {
+        if (retryCount < maxRetries) {
+          const delay = baseDelay * Math.pow(2, retryCount);
+          await new Promise((resolve) => setTimeout(resolve, delay));
           await createReviewComment(
             owner,
             repo,
             pull_number,
             batch,
-            Math.ceil(batchSize / 2),
+            Math.max(1, Math.floor(batchSize / 2)),
+            retryCount + 1,
           );
+        } else {
+          console.error(`Max retries reached for batch. Skipping...`);
         }
       } else {
         throw error;

@@ -214,7 +214,9 @@ function createComment(file, chunk, aiResponses) {
     });
 }
 function createReviewComment(owner_1, repo_1, pull_number_1, comments_1) {
-    return __awaiter(this, arguments, void 0, function* (owner, repo, pull_number, comments, batchSize = 10) {
+    return __awaiter(this, arguments, void 0, function* (owner, repo, pull_number, comments, batchSize = 10, retryCount = 0) {
+        const maxRetries = 5;
+        const baseDelay = 1000; // 1 second
         for (let i = 0; i < comments.length; i += batchSize) {
             const batch = comments.slice(i, i + batchSize);
             try {
@@ -227,11 +229,17 @@ function createReviewComment(owner_1, repo_1, pull_number_1, comments_1) {
                 });
             }
             catch (error) {
-                if (error instanceof Error && "status" in error && error.status === 422) {
-                    console.log(`Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...\nERROR:\n${error}`);
-                    yield new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second
-                    if (batchSize > 1) {
-                        yield createReviewComment(owner, repo, pull_number, batch, Math.ceil(batchSize / 2));
+                if (error instanceof Error &&
+                    "status" in error &&
+                    (error.status === 422 || error.status === 403)) {
+                    console.log(`Error creating review. batchSize = ${batchSize}. Retrying...\nERROR:\n${error}`);
+                    if (retryCount < maxRetries) {
+                        const delay = baseDelay * Math.pow(2, retryCount);
+                        yield new Promise((resolve) => setTimeout(resolve, delay));
+                        yield createReviewComment(owner, repo, pull_number, batch, Math.max(1, Math.floor(batchSize / 2)), retryCount + 1);
+                    }
+                    else {
+                        console.error(`Max retries reached for batch. Skipping...`);
                     }
                 }
                 else {
