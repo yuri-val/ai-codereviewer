@@ -1,15 +1,16 @@
-import { readFileSync } from "fs";
+import {readFileSync} from "fs";
 import * as core from "@actions/core";
 import OpenAI from "openai";
-import { Octokit } from "@octokit/rest";
-import parseDiff, { Chunk, File } from "parse-diff";
-import { minimatch } from "minimatch"; // Ensure minimatch is imported correctly
+import {Octokit} from "@octokit/rest";
+import parseDiff, {Chunk, File} from "parse-diff";
+import {minimatch} from "minimatch"; // Ensure minimatch is imported correctly
+
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
 
-const octokit = new Octokit({ auth: GITHUB_TOKEN });
+const octokit = new Octokit({auth: GITHUB_TOKEN});
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
@@ -57,10 +58,30 @@ async function getDiff(
     owner,
     repo,
     pull_number,
-    mediaType: { format: "diff" },
+    mediaType: {format: "diff"},
   });
   // @ts-expect-error - response.data is a string
   return response.data;
+}
+
+async function getFileContent(
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string
+): Promise<string> {
+  const response = await octokit.repos.getContent({
+    owner,
+    repo,
+    path,
+    ref,
+  });
+
+  if ('content' in response.data) {
+    return Buffer.from(response.data.content, 'base64').toString('utf-8');
+  } else {
+    throw new Error('Unable to get file content');
+  }
 }
 
 async function analyzeCode(
@@ -71,8 +92,9 @@ async function analyzeCode(
 
   for (const file of parsedDiff) {
     if (file.to === "/dev/null") continue; // Ignore deleted files
+    const fileContent = await getFileContent(prDetails.owner, prDetails.repo, file.to!, `refs/pull/${prDetails.pull_number}/head`);
     for (const chunk of file.chunks) {
-      const prompt = createPrompt(file, chunk, prDetails);
+      const prompt = createPrompt(file, chunk, prDetails, fileContent);
       console.log(prompt);
       const aiResponse = await getAIResponse(prompt);
       if (aiResponse) {
@@ -86,14 +108,22 @@ async function analyzeCode(
   return comments;
 }
 
-function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails): string {
-  return `Your task is to review pull requests. Instructions:
+function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails, fileContent: string): string {
+  return `Your task is to review pull requests. 
+
+Instructions:
+
+YOU MUST:
 - Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
-- Do not give positive comments or compliments.
 - Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
 - Write the comment in GitHub Markdown format.
 - Use the given description only for the overall context and only comment the code.
-- IMPORTANT: NEVER suggest adding comments to the code.
+
+YOU MUST NEVER:
+- suggest adding comments to the code.
+- give positive comments or compliments.
+- provide general information about the code.
+
 
 Review the following code diff in the file "${
     file.to
@@ -111,9 +141,15 @@ Git diff to review:
 \`\`\`diff
 ${chunk.content}
 ${chunk.changes
-  // @ts-expect-error - ln and ln2 exists where needed
-  .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
-  .join("\n")}
+    // @ts-expect-error - ln and ln2 exists where needed
+    .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
+    .join("\n")}
+\`\`\`
+
+Full content of the file after changes:
+
+\`\`\`
+${fileContent}
 \`\`\`
 `;
 }
@@ -134,7 +170,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      response_format: { type: "json_object" },
+      response_format: {type: "json_object"},
       messages: [
         {
           role: "system",
@@ -177,15 +213,28 @@ async function createReviewComment(
   pull_number: number,
   comments: Array<{ body: string; path: string; line: number }>,
 ): Promise<void> {
-  await octokit.pulls.createReview({
-    owner,
-    repo,
-    pull_number,
-    comments,
-    event: "COMMENT",
-  });
+  const batchSize = 10; // Adjust this value as needed
+  for (let i = 0; i < comments.length; i += batchSize) {
+    const batch = comments.slice(i, i + batchSize);
+    try {
+      await octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number,
+        comments: batch,
+        event: "COMMENT",
+      });
+    } catch (error) {
+      if (error.status === 422) {
+        console.log(`Error creating review. Retrying with smaller batch...`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
+        await createReviewComment(owner, repo, pull_number, batch);
+      } else {
+        throw error;
+      }
+    }
+  }
 }
-
 async function main() {
   const prDetails = await getPRDetails();
   let diff: string | null;
@@ -250,5 +299,6 @@ async function main() {
 
 main().catch((error) => {
   console.error("Error:", error);
+  console.error(error?.data?.errors);
   process.exit(1);
 });
