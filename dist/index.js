@@ -228,7 +228,7 @@ function createReviewComment(owner_1, repo_1, pull_number_1, comments_1) {
             }
             catch (error) {
                 if (error instanceof Error && "status" in error && error.status === 422) {
-                    console.log(`Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...`);
+                    console.log(`Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...\nERROR:\n${error}`);
                     yield new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second
                     if (batchSize > 1) {
                         yield createReviewComment(owner, repo, pull_number, batch, Math.ceil(batchSize / 2));

@@ -236,7 +236,7 @@ async function createReviewComment(
     } catch (error) {
       if (error instanceof Error && "status" in error && error.status === 422) {
         console.log(
-          `Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...`,
+          `Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...\nERROR:\n${error}`,
         );
         await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second
         if (batchSize > 1) {
