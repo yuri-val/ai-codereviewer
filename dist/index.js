@@ -93,14 +93,31 @@ function getDiff(owner, repo, pull_number) {
         return response.data;
     });
 }
+function getFileContent(owner, repo, path, ref) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const response = yield octokit.repos.getContent({
+            owner,
+            repo,
+            path,
+            ref,
+        });
+        if ("content" in response.data) {
+            return Buffer.from(response.data.content, "base64").toString("utf-8");
+        }
+        else {
+            throw new Error("Unable to get file content");
+        }
+    });
+}
 function analyzeCode(parsedDiff, prDetails) {
     return __awaiter(this, void 0, void 0, function* () {
         const comments = [];
         for (const file of parsedDiff) {
             if (file.to === "/dev/null")
                 continue; // Ignore deleted files
+            const fileContent = yield getFileContent(prDetails.owner, prDetails.repo, file.to, `refs/pull/${prDetails.pull_number}/head`);
             for (const chunk of file.chunks) {
-                const prompt = createPrompt(file, chunk, prDetails);
+                const prompt = createPrompt(file, chunk, prDetails, fileContent);
                 console.log(prompt);
                 const aiResponse = yield getAIResponse(prompt);
                 if (aiResponse) {
@@ -114,14 +131,22 @@ function analyzeCode(parsedDiff, prDetails) {
         return comments;
     });
 }
-function createPrompt(file, chunk, prDetails) {
-    return `Your task is to review pull requests. Instructions:
+function createPrompt(file, chunk, prDetails, fileContent) {
+    return `Your task is to review pull requests. 
+
+Instructions:
+
+YOU MUST:
 - Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
-- Do not give positive comments or compliments.
 - Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
 - Write the comment in GitHub Markdown format.
 - Use the given description only for the overall context and only comment the code.
-- IMPORTANT: NEVER suggest adding comments to the code.
+
+YOU MUST NEVER:
+- suggest adding comments to the code.
+- give positive comments or compliments.
+- provide general information about the code.
+
 
 Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
   
@@ -140,6 +165,12 @@ ${chunk.changes
         // @ts-expect-error - ln and ln2 exists where needed
         .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
         .join("\n")}
+\`\`\`
+
+Full content of the file after changes:
+
+\`\`\`
+${fileContent}
 \`\`\`
 `;
 }
@@ -182,15 +213,32 @@ function createComment(file, chunk, aiResponses) {
         };
     });
 }
-function createReviewComment(owner, repo, pull_number, comments) {
-    return __awaiter(this, void 0, void 0, function* () {
-        yield octokit.pulls.createReview({
-            owner,
-            repo,
-            pull_number,
-            comments,
-            event: "COMMENT",
-        });
+function createReviewComment(owner_1, repo_1, pull_number_1, comments_1) {
+    return __awaiter(this, arguments, void 0, function* (owner, repo, pull_number, comments, batchSize = 10) {
+        for (let i = 0; i < comments.length; i += batchSize) {
+            const batch = comments.slice(i, i + batchSize);
+            try {
+                yield octokit.pulls.createReview({
+                    owner,
+                    repo,
+                    pull_number,
+                    comments: batch,
+                    event: "COMMENT",
+                });
+            }
+            catch (error) {
+                if (error instanceof Error && "status" in error && error.status === 422) {
+                    console.log(`Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...`);
+                    yield new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second
+                    if (batchSize > 1) {
+                        yield createReviewComment(owner, repo, pull_number, batch, Math.ceil(batchSize / 2));
+                    }
+                }
+                else {
+                    throw error;
+                }
+            }
+        }
     });
 }
 function main() {
@@ -239,7 +287,9 @@ function main() {
     });
 }
 main().catch((error) => {
+    var _a;
     console.error("Error:", error);
+    console.error((_a = error === null || error === void 0 ? void 0 : error.data) === null || _a === void 0 ? void 0 : _a.errors);
     process.exit(1);
 });
 
@@ -3943,7 +3993,7 @@ module.exports.defineEventAttribute = defineEventAttribute
  */
 
 var util = __nccwpck_require__(3837);
-var ms = __nccwpck_require__(900);
+var ms = __nccwpck_require__(5631);
 
 module.exports = function (t) {
   if (typeof t === 'number') return t;
@@ -3954,6 +4004,175 @@ module.exports = function (t) {
   }
   return r;
 };
+
+
+/***/ }),
+
+/***/ 5631:
+/***/ ((module) => {
+
+/**
+ * Helpers.
+ */
+
+var s = 1000;
+var m = s * 60;
+var h = m * 60;
+var d = h * 24;
+var w = d * 7;
+var y = d * 365.25;
+
+/**
+ * Parse or format the given `val`.
+ *
+ * Options:
+ *
+ *  - `long` verbose formatting [false]
+ *
+ * @param {String|Number} val
+ * @param {Object} [options]
+ * @throws {Error} throw an error if val is not a non-empty string or a number
+ * @return {String|Number}
+ * @api public
+ */
+
+module.exports = function (val, options) {
+  options = options || {};
+  var type = typeof val;
+  if (type === 'string' && val.length > 0) {
+    return parse(val);
+  } else if (type === 'number' && isFinite(val)) {
+    return options.long ? fmtLong(val) : fmtShort(val);
+  }
+  throw new Error(
+    'val is not a non-empty string or a valid number. val=' +
+      JSON.stringify(val)
+  );
+};
+
+/**
+ * Parse the given `str` and return milliseconds.
+ *
+ * @param {String} str
+ * @return {Number}
+ * @api private
+ */
+
+function parse(str) {
+  str = String(str);
+  if (str.length > 100) {
+    return;
+  }
+  var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(
+    str
+  );
+  if (!match) {
+    return;
+  }
+  var n = parseFloat(match[1]);
+  var type = (match[2] || 'ms').toLowerCase();
+  switch (type) {
+    case 'years':
+    case 'year':
+    case 'yrs':
+    case 'yr':
+    case 'y':
+      return n * y;
+    case 'weeks':
+    case 'week':
+    case 'w':
+      return n * w;
+    case 'days':
+    case 'day':
+    case 'd':
+      return n * d;
+    case 'hours':
+    case 'hour':
+    case 'hrs':
+    case 'hr':
+    case 'h':
+      return n * h;
+    case 'minutes':
+    case 'minute':
+    case 'mins':
+    case 'min':
+    case 'm':
+      return n * m;
+    case 'seconds':
+    case 'second':
+    case 'secs':
+    case 'sec':
+    case 's':
+      return n * s;
+    case 'milliseconds':
+    case 'millisecond':
+    case 'msecs':
+    case 'msec':
+    case 'ms':
+      return n;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Short format for `ms`.
+ *
+ * @param {Number} ms
+ * @return {String}
+ * @api private
+ */
+
+function fmtShort(ms) {
+  var msAbs = Math.abs(ms);
+  if (msAbs >= d) {
+    return Math.round(ms / d) + 'd';
+  }
+  if (msAbs >= h) {
+    return Math.round(ms / h) + 'h';
+  }
+  if (msAbs >= m) {
+    return Math.round(ms / m) + 'm';
+  }
+  if (msAbs >= s) {
+    return Math.round(ms / s) + 's';
+  }
+  return ms + 'ms';
+}
+
+/**
+ * Long format for `ms`.
+ *
+ * @param {Number} ms
+ * @return {String}
+ * @api private
+ */
+
+function fmtLong(ms) {
+  var msAbs = Math.abs(ms);
+  if (msAbs >= d) {
+    return plural(ms, msAbs, d, 'day');
+  }
+  if (msAbs >= h) {
+    return plural(ms, msAbs, h, 'hour');
+  }
+  if (msAbs >= m) {
+    return plural(ms, msAbs, m, 'minute');
+  }
+  if (msAbs >= s) {
+    return plural(ms, msAbs, s, 'second');
+  }
+  return ms + ' ms';
+}
+
+/**
+ * Pluralization helper.
+ */
+
+function plural(ms, msAbs, n, name) {
+  var isPlural = msAbs >= n * 1.5;
+  return Math.round(ms / n) + ' ' + name + (isPlural ? 's' : '');
+}
 
 
 /***/ }),
@@ -6910,175 +7129,6 @@ module.exports = function(stream_module) {
         IconvLiteDecoderStream: IconvLiteDecoderStream,
     };
 };
-
-
-/***/ }),
-
-/***/ 900:
-/***/ ((module) => {
-
-/**
- * Helpers.
- */
-
-var s = 1000;
-var m = s * 60;
-var h = m * 60;
-var d = h * 24;
-var w = d * 7;
-var y = d * 365.25;
-
-/**
- * Parse or format the given `val`.
- *
- * Options:
- *
- *  - `long` verbose formatting [false]
- *
- * @param {String|Number} val
- * @param {Object} [options]
- * @throws {Error} throw an error if val is not a non-empty string or a number
- * @return {String|Number}
- * @api public
- */
-
-module.exports = function (val, options) {
-  options = options || {};
-  var type = typeof val;
-  if (type === 'string' && val.length > 0) {
-    return parse(val);
-  } else if (type === 'number' && isFinite(val)) {
-    return options.long ? fmtLong(val) : fmtShort(val);
-  }
-  throw new Error(
-    'val is not a non-empty string or a valid number. val=' +
-      JSON.stringify(val)
-  );
-};
-
-/**
- * Parse the given `str` and return milliseconds.
- *
- * @param {String} str
- * @return {Number}
- * @api private
- */
-
-function parse(str) {
-  str = String(str);
-  if (str.length > 100) {
-    return;
-  }
-  var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(
-    str
-  );
-  if (!match) {
-    return;
-  }
-  var n = parseFloat(match[1]);
-  var type = (match[2] || 'ms').toLowerCase();
-  switch (type) {
-    case 'years':
-    case 'year':
-    case 'yrs':
-    case 'yr':
-    case 'y':
-      return n * y;
-    case 'weeks':
-    case 'week':
-    case 'w':
-      return n * w;
-    case 'days':
-    case 'day':
-    case 'd':
-      return n * d;
-    case 'hours':
-    case 'hour':
-    case 'hrs':
-    case 'hr':
-    case 'h':
-      return n * h;
-    case 'minutes':
-    case 'minute':
-    case 'mins':
-    case 'min':
-    case 'm':
-      return n * m;
-    case 'seconds':
-    case 'second':
-    case 'secs':
-    case 'sec':
-    case 's':
-      return n * s;
-    case 'milliseconds':
-    case 'millisecond':
-    case 'msecs':
-    case 'msec':
-    case 'ms':
-      return n;
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Short format for `ms`.
- *
- * @param {Number} ms
- * @return {String}
- * @api private
- */
-
-function fmtShort(ms) {
-  var msAbs = Math.abs(ms);
-  if (msAbs >= d) {
-    return Math.round(ms / d) + 'd';
-  }
-  if (msAbs >= h) {
-    return Math.round(ms / h) + 'h';
-  }
-  if (msAbs >= m) {
-    return Math.round(ms / m) + 'm';
-  }
-  if (msAbs >= s) {
-    return Math.round(ms / s) + 's';
-  }
-  return ms + 'ms';
-}
-
-/**
- * Long format for `ms`.
- *
- * @param {Number} ms
- * @return {String}
- * @api private
- */
-
-function fmtLong(ms) {
-  var msAbs = Math.abs(ms);
-  if (msAbs >= d) {
-    return plural(ms, msAbs, d, 'day');
-  }
-  if (msAbs >= h) {
-    return plural(ms, msAbs, h, 'hour');
-  }
-  if (msAbs >= m) {
-    return plural(ms, msAbs, m, 'minute');
-  }
-  if (msAbs >= s) {
-    return plural(ms, msAbs, s, 'second');
-  }
-  return ms + ' ms';
-}
-
-/**
- * Pluralization helper.
- */
-
-function plural(ms, msAbs, n, name) {
-  var isPlural = msAbs >= n * 1.5;
-  return Math.round(ms / n) + ' ' + name + (isPlural ? 's' : '');
-}
 
 
 /***/ }),

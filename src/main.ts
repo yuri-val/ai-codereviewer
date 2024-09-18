@@ -1,16 +1,15 @@
-import {readFileSync} from "fs";
+import { readFileSync } from "fs";
 import * as core from "@actions/core";
 import OpenAI from "openai";
-import {Octokit} from "@octokit/rest";
-import parseDiff, {Chunk, File} from "parse-diff";
-import {minimatch} from "minimatch"; // Ensure minimatch is imported correctly
-
+import { Octokit } from "@octokit/rest";
+import parseDiff, { Chunk, File } from "parse-diff";
+import { minimatch } from "minimatch"; // Ensure minimatch is imported correctly
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
 
-const octokit = new Octokit({auth: GITHUB_TOKEN});
+const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
@@ -58,7 +57,7 @@ async function getDiff(
     owner,
     repo,
     pull_number,
-    mediaType: {format: "diff"},
+    mediaType: { format: "diff" },
   });
   // @ts-expect-error - response.data is a string
   return response.data;
@@ -68,7 +67,7 @@ async function getFileContent(
   owner: string,
   repo: string,
   path: string,
-  ref: string
+  ref: string,
 ): Promise<string> {
   const response = await octokit.repos.getContent({
     owner,
@@ -77,10 +76,10 @@ async function getFileContent(
     ref,
   });
 
-  if ('content' in response.data) {
-    return Buffer.from(response.data.content, 'base64').toString('utf-8');
+  if ("content" in response.data) {
+    return Buffer.from(response.data.content, "base64").toString("utf-8");
   } else {
-    throw new Error('Unable to get file content');
+    throw new Error("Unable to get file content");
   }
 }
 
@@ -92,7 +91,12 @@ async function analyzeCode(
 
   for (const file of parsedDiff) {
     if (file.to === "/dev/null") continue; // Ignore deleted files
-    const fileContent = await getFileContent(prDetails.owner, prDetails.repo, file.to!, `refs/pull/${prDetails.pull_number}/head`);
+    const fileContent = await getFileContent(
+      prDetails.owner,
+      prDetails.repo,
+      file.to!,
+      `refs/pull/${prDetails.pull_number}/head`,
+    );
     for (const chunk of file.chunks) {
       const prompt = createPrompt(file, chunk, prDetails, fileContent);
       console.log(prompt);
@@ -108,7 +112,12 @@ async function analyzeCode(
   return comments;
 }
 
-function createPrompt(file: File, chunk: Chunk, prDetails: PRDetails, fileContent: string): string {
+function createPrompt(
+  file: File,
+  chunk: Chunk,
+  prDetails: PRDetails,
+  fileContent: string,
+): string {
   return `Your task is to review pull requests. 
 
 Instructions:
@@ -141,9 +150,9 @@ Git diff to review:
 \`\`\`diff
 ${chunk.content}
 ${chunk.changes
-    // @ts-expect-error - ln and ln2 exists where needed
-    .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
-    .join("\n")}
+  // @ts-expect-error - ln and ln2 exists where needed
+  .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
+  .join("\n")}
 \`\`\`
 
 Full content of the file after changes:
@@ -170,7 +179,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
   try {
     const response = await openai.chat.completions.create({
       ...queryConfig,
-      response_format: {type: "json_object"},
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
@@ -212,8 +221,8 @@ async function createReviewComment(
   repo: string,
   pull_number: number,
   comments: Array<{ body: string; path: string; line: number }>,
+  batchSize = 10,
 ): Promise<void> {
-  const batchSize = 10; // Adjust this value as needed
   for (let i = 0; i < comments.length; i += batchSize) {
     const batch = comments.slice(i, i + batchSize);
     try {
@@ -225,10 +234,20 @@ async function createReviewComment(
         event: "COMMENT",
       });
     } catch (error) {
-      if (error.status === 422) {
-        console.log(`Error creating review. Retrying with smaller batch...`);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
-        await createReviewComment(owner, repo, pull_number, batch);
+      if (error instanceof Error && "status" in error && error.status === 422) {
+        console.log(
+          `Error creating review. batchSize = ${batchSize}. Retrying with smaller batch...`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait for 1 second
+        if (batchSize > 1) {
+          await createReviewComment(
+            owner,
+            repo,
+            pull_number,
+            batch,
+            Math.ceil(batchSize / 2),
+          );
+        }
       } else {
         throw error;
       }
