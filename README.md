@@ -68,6 +68,7 @@ jobs:
 ## How It Works
 
 The AI Code Reviewer GitHub Action:
+
 1. Retrieves the pull request diff
 2. Filters out excluded files
 3. Sends code chunks to the OpenAI API

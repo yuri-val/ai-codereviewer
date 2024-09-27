@@ -137,15 +137,17 @@ function createPrompt(file, chunk, prDetails, fileContent) {
 Instructions:
 
 YOU MUST:
-- Provide the response in following JSON format:  {"reviews": [{"lineNumber":  <line_number>, "reviewComment": "<review comment>"}]}
-- Provide comments and suggestions ONLY if there is something to improve, otherwise "reviews" should be an empty array.
+- Provide the response in the following JSON format: {"reviews": [{"lineNumber": <line_number>, "reviewComment": "<review comment>"}]}
+- Provide comments and suggestions ONLY if there is a **critical issue**, significant problem, or code that may impact the overall performance, security, or functionality of the application. Otherwise, "reviews" should be an empty array.
+- Focus on critical changes and issues that could affect the application's performance, security, or stability.
 - Write the comment in GitHub Markdown format.
-- Use the given description only for the overall context and only comment the code.
+- Use the given description only for overall context and comment only on the code.
 
 YOU MUST NEVER:
-- suggest adding comments to the code.
-- give positive comments or compliments.
-- provide general information about the code.
+- Suggest adding comments to the code.
+- Give positive comments or compliments.
+- Provide general information about the code.
+- Nitpick code or leave neutral comments that do not affect the application.
 
 
 Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
