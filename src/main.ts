@@ -97,27 +97,34 @@ async function analyzeCode(
       file.to!,
       `refs/pull/${prDetails.pull_number}/head`,
     );
-    for (const chunk of file.chunks) {
-      const prompt = createPrompt(file, chunk, prDetails, fileContent);
-      console.log(prompt);
-      const aiResponse = await getAIResponse(prompt);
-      if (aiResponse) {
-        const newComments = createComment(file, chunk, aiResponse);
-        if (newComments) {
-          comments.push(...newComments);
-        }
+
+    const prompt = createPromptForFile(file, prDetails, fileContent);
+    console.log(prompt);
+    const aiResponse = await getAIResponse(prompt);
+    if (aiResponse) {
+      const newComments = createCommentsForFile(file, aiResponse);
+      if (newComments) {
+        comments.push(...newComments);
       }
     }
   }
   return comments;
 }
 
-function createPrompt(
+function createPromptForFile(
   file: File,
-  chunk: Chunk,
   prDetails: PRDetails,
   fileContent: string,
 ): string {
+  const diffContent = file.chunks
+    .map((chunk) =>
+      chunk.changes
+        // @ts-expect-error - ln and ln2 exists where needed
+        .map((c) => `${c.ln || c.ln2 || ""} ${c.content}`)
+        .join("\n"),
+    )
+    .join("\n");
+
   return `Your task is to review pull requests. 
 
 Instructions:
@@ -135,10 +142,7 @@ YOU MUST NEVER:
 - Provide general information about the code.
 - Nitpick code or leave neutral comments that do not affect the application.
 
-
-Review the following code diff in the file "${
-    file.to
-  }" and take the pull request title and description into account when writing the response.
+Review the following code diff in the file "${file.to}" and take the pull request title and description into account when writing the response.
   
 Pull request title: ${prDetails.title}
 Pull request description:
@@ -149,20 +153,34 @@ ${prDetails.description}
 
 Git diff to review:
 
+---
 \`\`\`diff
-${chunk.content}
-${chunk.changes
-  // @ts-expect-error - ln and ln2 exists where needed
-  .map((c) => `${c.ln ? c.ln : c.ln2} ${c.content}`)
-  .join("\n")}
+${diffContent}
 \`\`\`
+---
 
 Full content of the file after changes:
 
+---
 \`\`\`
 ${fileContent}
 \`\`\`
+---
 `;
+}
+
+function createCommentsForFile(
+  file: File,
+  aiResponses: Array<{
+    lineNumber: string;
+    reviewComment: string;
+  }>,
+): Array<{ body: string; path: string; line: number }> {
+  return aiResponses.map((aiResponse) => ({
+    body: aiResponse.reviewComment,
+    path: file.to!,
+    line: Number(aiResponse.lineNumber),
+  }));
 }
 
 async function getAIResponse(prompt: string): Promise<Array<{
