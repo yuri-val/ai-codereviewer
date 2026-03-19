@@ -2,8 +2,8 @@ import { readFileSync } from "fs";
 import * as core from "@actions/core";
 import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
-import parseDiff, { Chunk, File } from "parse-diff";
-import { minimatch } from "minimatch"; // Ensure minimatch is imported correctly
+import parseDiff, { File } from "parse-diff";
+import { minimatch } from "minimatch";
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
@@ -41,9 +41,7 @@ async function getPRDetails(): Promise<PRDetails> {
       description: prResponse.data.body ?? "",
     };
   } catch (error) {
-    console.error("Error parsing JSON:", error);
-    console.log(process.env.GITHUB_EVENT_PATH);
-    console.log(readFileSync(process.env.GITHUB_EVENT_PATH || "", "utf8"));
+    console.error("Error getting PR details:", error);
     throw error;
   }
 }
@@ -99,7 +97,6 @@ async function analyzeCode(
     );
 
     const prompt = createPromptForFile(file, prDetails, fileContent);
-    console.log(prompt);
     const aiResponse = await getAIResponse(prompt);
     if (aiResponse) {
       const newComments = createCommentsForFile(file, aiResponse);
@@ -190,10 +187,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
   const queryConfig = {
     model: OPENAI_API_MODEL,
     temperature: 0.2,
-    max_tokens: 700,
-    top_p: 1,
-    frequency_penalty: 0,
-    presence_penalty: 0,
+    max_completion_tokens: 700,
   };
 
   try {
@@ -202,7 +196,7 @@ async function getAIResponse(prompt: string): Promise<Array<{
       response_format: { type: "json_object" },
       messages: [
         {
-          role: "system",
+          role: "user",
           content: prompt,
         },
       ],
@@ -214,26 +208,6 @@ async function getAIResponse(prompt: string): Promise<Array<{
     console.error("Error:", error);
     return null;
   }
-}
-
-function createComment(
-  file: File,
-  chunk: Chunk,
-  aiResponses: Array<{
-    lineNumber: string;
-    reviewComment: string;
-  }>,
-): Array<{ body: string; path: string; line: number }> {
-  return aiResponses.flatMap((aiResponse) => {
-    if (!file.to) {
-      return [];
-    }
-    return {
-      body: aiResponse.reviewComment,
-      path: file.to,
-      line: Number(aiResponse.lineNumber),
-    };
-  });
 }
 
 async function createReviewComment(
@@ -329,7 +303,8 @@ async function main() {
   const excludePatterns = core
     .getInput("exclude")
     .split(",")
-    .map((s) => s.trim());
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const filteredDiff = parsedDiff.filter((file) => {
     return !excludePatterns.some((pattern) =>
