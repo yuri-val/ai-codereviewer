@@ -10,7 +10,7 @@ inputs:
   OPENAI_API_MODEL:
     description: "OpenAI API model."
     required: false
-    default: "gpt-5.4-mini"
+    default: "gpt-5.6-luna"
   exclude:
     description: "Glob patterns to exclude files from the diff analysis"
     required: false

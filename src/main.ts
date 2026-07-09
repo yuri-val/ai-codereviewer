@@ -184,10 +184,15 @@ async function getAIResponse(prompt: string): Promise<Array<{
   lineNumber: string;
   reviewComment: string;
 }> | null> {
+  // GPT-5.x models (e.g. gpt-5.6-luna) reject the old chat-completions
+  // knobs: `max_tokens` was renamed to `max_completion_tokens`, and a
+  // custom `temperature` is not accepted (only the default). The budget
+  // is bumped because these models spend completion tokens on internal
+  // reasoning before emitting the JSON — 700 risked an empty/truncated
+  // reply that JSON.parse would drop.
   const queryConfig = {
     model: OPENAI_API_MODEL,
-    temperature: 0.2,
-    max_completion_tokens: 700,
+    max_completion_tokens: 2000,
   };
 
   try {
