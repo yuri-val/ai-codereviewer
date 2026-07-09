@@ -3,6 +3,8 @@ on:
   pull_request:
     types:
       - opened
+      - reopened
+      - ready_for_review
       - synchronize
 permissions: write-all
 jobs:
@@ -16,5 +18,5 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_MODEL: "gpt-4o-mini"
+          OPENAI_API_MODEL: "gpt-5.4-mini"
           exclude: "**/*.lock,dist/**,**/*.json, **/*.md"

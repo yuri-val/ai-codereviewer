@@ -1,18 +1,21 @@
 # AI Code Reviewer
 
-AI Code Reviewer is a GitHub Action that leverages OpenAI's GPT-4 API to provide intelligent feedback and suggestions on your pull requests. This powerful tool helps improve code quality and saves developers time by automating the code review process.
+AI Code Reviewer is a GitHub Action that leverages the OpenAI API to provide intelligent feedback and suggestions on your pull requests. This powerful tool helps improve code quality and saves developers time by automating the code review process.
 
 ## Features
 
-- Reviews pull requests using OpenAI's GPT API
-- Provides intelligent comments and suggestions for improving your code
+- Reviews each changed file with its full content as context, not just the diff
+- Reports only critical (🔴) and major (🟠) issues: bugs, security, data integrity, performance, reliability — no nitpicks or style comments
+- Includes GitHub suggestion blocks for one-line fixes where possible
+- Validates AI-proposed line numbers against the diff, so comments always anchor correctly
+- Reviews files concurrently and retries transient OpenAI failures automatically
 - Filters out files that match specified exclude patterns
 - Easy to set up and integrate into your GitHub workflow
 
 ## Requirements
 
 - A GitHub repository with pull request workflows
-- An OpenAI API key with access to the GPT-4 API
+- An OpenAI API key
 - GitHub Actions enabled on your repository
 
 ## Configuration
@@ -20,7 +23,7 @@ AI Code Reviewer is a GitHub Action that leverages OpenAI's GPT-4 API to provide
 Customize the behavior of AI Code Reviewer using the following inputs in your workflow file:
 
 - `GITHUB_TOKEN`: Required. Used to authenticate and interact with the GitHub API.
-- `OPENAI_API_KEY`: Required. Your OpenAI API key for accessing the GPT-4 API.
+- `OPENAI_API_KEY`: Required. Your OpenAI API key.
 - `OPENAI_API_MODEL`: Optional. The specific OpenAI model to use. Default is "gpt-5.4-mini" (bump to gpt-5.6-luna once your OpenAI org has access).
 - `exclude`: Optional. A comma-separated list of file patterns to exclude from review.
 
@@ -38,6 +41,8 @@ on:
   pull_request:
     types:
       - opened
+      - reopened
+      - ready_for_review
       - synchronize
 permissions: write-all
 jobs:
@@ -69,11 +74,11 @@ jobs:
 
 The AI Code Reviewer GitHub Action:
 
-1. Retrieves the pull request diff
-2. Filters out excluded files
-3. Sends code chunks to the OpenAI API
-4. Generates review comments based on the AI's response
-5. Adds the comments to the pull request
+1. Retrieves the pull request diff (or, on `synchronize`, only the newly pushed commits)
+2. Filters out excluded files and files with nothing new to review (e.g. pure deletions)
+3. For each remaining file, sends the annotated diff plus the full file content (truncated if very large) to the OpenAI API — several files are processed in parallel
+4. Parses and validates the AI's JSON response, dropping comments that don't map to a line in the diff
+5. Posts the surviving comments to the pull request as a review, tagged 🔴 (critical) or 🟠 (major)
 
 ## Troubleshooting
 
