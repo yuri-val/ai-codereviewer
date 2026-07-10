@@ -24,7 +24,7 @@ Customize the behavior of AI Code Reviewer using the following inputs in your wo
 
 - `GITHUB_TOKEN`: Required. Used to authenticate and interact with the GitHub API.
 - `OPENAI_API_KEY`: Required. Your OpenAI API key.
-- `OPENAI_API_MODEL`: Optional. The specific OpenAI model to use. Default is "gpt-5.4-mini" (bump to gpt-5.6-luna once your OpenAI org has access).
+- `OPENAI_API_MODEL`: Optional. The specific OpenAI model to use. Default is "gpt-5.6-luna".
 - `exclude`: Optional. A comma-separated list of file patterns to exclude from review.
 
 ## Setup
@@ -56,7 +56,7 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_MODEL: "gpt-5.4-mini"
+          OPENAI_API_MODEL: "gpt-5.6-luna"
           exclude: "**/*.lock,dist/**,**/*.json,**/*.md"
 ```
 

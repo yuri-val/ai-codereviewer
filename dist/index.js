@@ -57,9 +57,12 @@ const FILE_CONCURRENCY = 3;
 // Full file content is context, not the review target — cap it so a single
 // huge file can't blow the model's context window and fail the request.
 const MAX_FILE_CONTENT_CHARS = 60000;
-// Completion budgets: start small, retry once with a bigger budget if the
-// model ran out of tokens mid-JSON (finish_reason === "length").
-const COMPLETION_TOKEN_BUDGETS = [2000, 4000];
+// Completion budgets: retry once with a bigger budget if the model ran out
+// of tokens mid-JSON (finish_reason === "length"). Reasoning models like
+// gpt-5.6-luna spend completion tokens on internal reasoning before emitting
+// JSON, so a small starting budget would make truncation-retries the common
+// path and double latency/cost per file.
+const COMPLETION_TOKEN_BUDGETS = [4000, 8000];
 const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
@@ -193,7 +196,9 @@ Anything below "major" must NOT be reported.
 \`\`\`suggestion
 <corrected line>
 \`\`\`
-- Report each distinct problem exactly once, anchored to the single most relevant line.
+  The suggestion must be the exact, complete replacement for that one line — original indentation preserved, no diff markers, no line numbers. If a correct fix needs changes on other lines too, explain it in prose instead of a suggestion block.
+- Report each distinct problem exactly once, anchored to the single most relevant line. If several symptoms share one root cause, write one comment about the root cause.
+- If many issues qualify, report only the most impactful ones — at most 7 per file.
 - NEVER: praise the code, comment on style/formatting/naming, suggest adding code comments or documentation, restate what the code does, make vague suggestions ("consider improving..."), or report an issue you are not confident is real.`;
 function createPromptForFile(file, prDetails, fileContent) {
     const diffContent = file.chunks
