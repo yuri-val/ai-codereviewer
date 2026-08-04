@@ -57,11 +57,12 @@ const FILE_CONCURRENCY = 3;
 // Context window (total tokens, input + output) per model. Used to decide how
 // many files travel in one review request.
 //
-// These are best-effort figures: OpenAI publishes no API to query them, so the
-// table has to be maintained by hand and will drift as models are released.
-// Nothing load-bearing depends on it being right — a request that overflows is
-// caught and the batch is split (see ContextOverflowError). Treat the numbers
-// as a starting point and override with MAX_CONTEXT_TOKENS when in doubt.
+// Figures from developers.openai.com/api/docs/models (checked 2026-08-04).
+// OpenAI publishes no API to query them, so this table is maintained by hand
+// and will drift as models are released. Nothing load-bearing depends on it
+// being right — a request that overflows is caught and the batch is split (see
+// ContextOverflowError) — but a stale entry costs extra requests, so override
+// with MAX_CONTEXT_TOKENS for a model newer than this comment.
 const MODEL_CONTEXT_WINDOWS = {
     "gpt-3.5-turbo": 16385,
     "gpt-4": 8192,
@@ -72,6 +73,13 @@ const MODEL_CONTEXT_WINDOWS = {
     "gpt-4.1": 1047576,
     "gpt-4.1-mini": 1047576,
     "gpt-4.1-nano": 1047576,
+    "gpt-5": 400000,
+    "gpt-5.1": 400000,
+    "gpt-5.5": 1050000,
+    "gpt-5.6": 1050000,
+    "gpt-5.6-sol": 1050000,
+    "gpt-5.6-terra": 1050000,
+    "gpt-5.6-luna": 1050000,
     o1: 200000,
     "o1-mini": 128000,
     o3: 200000,
@@ -79,7 +87,8 @@ const MODEL_CONTEXT_WINDOWS = {
     "o4-mini": 200000,
 };
 // Family fallbacks for versioned or dated model names ("gpt-4o-2024-08-06",
-// "gpt-5.6-luna"). Longest prefix wins, so put specific families first.
+// "gpt-5.6-luna-preview"). Longest prefix wins, so put specific families
+// first — "gpt-5.6" must be tried before "gpt-5", which is a different window.
 const MODEL_CONTEXT_PREFIXES = [
     ["gpt-4.1", 1047576],
     ["gpt-4o", 128000],
@@ -87,6 +96,8 @@ const MODEL_CONTEXT_PREFIXES = [
     ["gpt-4-32k", 32768],
     ["gpt-4", 8192],
     ["gpt-3.5", 16385],
+    ["gpt-5.6", 1050000],
+    ["gpt-5.5", 1050000],
     ["gpt-5", 400000],
     ["o1-mini", 128000],
     ["o1", 200000],
@@ -103,11 +114,22 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const CHARS_PER_TOKEN = 4;
 // Share of the context window a single request may fill with files. The rest
 // covers the completion (see COMPLETION_TOKEN_BUDGETS), the system prompt and
-// the slack in the character-based token estimate.
+// the slack in the character-based token estimate. Deliberately well short of
+// the whole window: on gpt-5.5 the documented input+output budget per request
+// is ~922k against a 1.05M window, and packing to the nominal figure would
+// overflow requests that the table says should fit.
 const INPUT_BUDGET_RATIO = 0.6;
+// Floor on the per-request file budget, and the room kept free for the reply.
+// Without the reserve a small-context model (gpt-4 at 8k) would be handed a
+// file budget that leaves no space for the completion it has to write.
+const COMPLETION_RESERVE_TOKENS = 12000;
+const MIN_INPUT_BUDGET_TOKENS = 2000;
 // Full file content is context, not the review target — cap it so a single
-// huge file can't blow the model's context window and fail the request.
-const MAX_FILE_CONTENT_CHARS = 60000;
+// huge file can't crowd every other file out of the request. The cap scales
+// with the budget: 60k chars is right for a 128k model, needlessly harsh for a
+// million-token one, where a long file can travel whole.
+const MIN_FILE_CONTENT_CHARS = 60000;
+const FILE_CONTENT_BUDGET_SHARE = 0.1;
 // Completion budgets: retry once with a bigger budget if the model ran out
 // of tokens mid-JSON (finish_reason === "length"). Reasoning models like
 // gpt-5.6-luna spend completion tokens on internal reasoning before emitting
@@ -216,15 +238,21 @@ function resolveContextWindow(model) {
 function estimateTokens(text) {
     return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
+function resolveInputBudget(contextWindow) {
+    return Math.max(MIN_INPUT_BUDGET_TOKENS, Math.min(Math.floor(contextWindow * INPUT_BUDGET_RATIO), contextWindow - COMPLETION_RESERVE_TOKENS));
+}
+function resolveFileContentCap(budgetTokens) {
+    return Math.max(MIN_FILE_CONTENT_CHARS, Math.floor(budgetTokens * CHARS_PER_TOKEN * FILE_CONTENT_BUDGET_SHARE));
+}
 // Groups files so each request carries as many as its model can hold. A file
 // whose own material exceeds the budget still gets a batch of its own — the
 // prompt truncates its content, and the diff is what matters anyway.
-function packIntoBatches(targets, budgetTokens) {
+function packIntoBatches(targets, budgetTokens, fileContentCap) {
     const batches = [];
     let current = [];
     let currentTokens = 0;
     for (const target of targets) {
-        const cost = estimateTokens(describeTarget(target));
+        const cost = estimateTokens(describeTarget(target, fileContentCap));
         if (current.length > 0 && currentTokens + cost > budgetTokens) {
             batches.push(current);
             current = [];
@@ -250,18 +278,19 @@ function analyzeCode(parsedDiff, prDetails) {
             });
         }));
         const contextWindow = resolveContextWindow(OPENAI_API_MODEL);
-        const budgetTokens = Math.floor(contextWindow * INPUT_BUDGET_RATIO);
-        const batches = packIntoBatches(targets, budgetTokens);
-        console.log(`Reviewing ${targets.length} file(s) in ${batches.length} request(s) — model "${OPENAI_API_MODEL}", ~${contextWindow} token context, ${budgetTokens} tokens of files per request.`);
-        const results = yield mapWithConcurrency(batches, FILE_CONCURRENCY, (batch) => analyzeBatch(batch, prDetails));
+        const budgetTokens = resolveInputBudget(contextWindow);
+        const fileContentCap = resolveFileContentCap(budgetTokens);
+        const batches = packIntoBatches(targets, budgetTokens, fileContentCap);
+        console.log(`Reviewing ${targets.length} file(s) in ${batches.length} request(s) — model "${OPENAI_API_MODEL}", ~${contextWindow} token context, ${budgetTokens} tokens of files per request, up to ${fileContentCap} chars of content per file.`);
+        const results = yield mapWithConcurrency(batches, FILE_CONCURRENCY, (batch) => analyzeBatch(batch, prDetails, fileContentCap));
         return results.flat();
     });
 }
-function analyzeBatch(batch, prDetails) {
+function analyzeBatch(batch, prDetails, fileContentCap) {
     return __awaiter(this, void 0, void 0, function* () {
         var _a;
         try {
-            const prompt = createPromptForBatch(batch, prDetails);
+            const prompt = createPromptForBatch(batch, prDetails, fileContentCap);
             const aiReviews = yield getAIResponse(prompt);
             return createCommentsForBatch(batch, aiReviews);
         }
@@ -272,8 +301,8 @@ function analyzeBatch(batch, prDetails) {
                 const middle = Math.ceil(batch.length / 2);
                 console.warn(`Batch of ${batch.length} file(s) exceeded the model context, splitting.`);
                 const halves = yield Promise.all([
-                    analyzeBatch(batch.slice(0, middle), prDetails),
-                    analyzeBatch(batch.slice(middle), prDetails),
+                    analyzeBatch(batch.slice(0, middle), prDetails, fileContentCap),
+                    analyzeBatch(batch.slice(middle), prDetails, fileContentCap),
                 ]);
                 return halves.flat();
             }
@@ -282,7 +311,7 @@ function analyzeBatch(batch, prDetails) {
             // this, one oversized file on a small-context model gets no review at all.
             if (error instanceof ContextOverflowError && ((_a = batch[0]) === null || _a === void 0 ? void 0 : _a.content)) {
                 console.warn(`"${batch[0].file.to}" does not fit with its content, reviewing the diff alone.`);
-                return analyzeBatch([{ file: batch[0].file, content: null }], prDetails);
+                return analyzeBatch([{ file: batch[0].file, content: null }], prDetails, fileContentCap);
             }
             const names = batch.map((t) => t.file.to).join(", ");
             console.error(`Error analyzing "${names}", skipping:`, error);
@@ -348,7 +377,7 @@ Do not comment on test structure, naming, setup style, missing coverage, or the 
 - NEVER: praise the code, comment on style/formatting/naming, suggest adding code comments or documentation, restate what the code does, make vague suggestions ("consider improving..."), or report an issue you are not confident is real.`;
 // Renders one file's section of the prompt. Also used to size batches, so the
 // packing measures exactly the text that will be sent.
-function describeTarget(target) {
+function describeTarget(target, maxContentChars) {
     const { file, content } = target;
     const diffContent = file.chunks
         .map((chunk) => {
@@ -363,10 +392,9 @@ function describeTarget(target) {
     })
         .join("\n");
     let truncatedContent = content;
-    if (truncatedContent && truncatedContent.length > MAX_FILE_CONTENT_CHARS) {
+    if (truncatedContent && truncatedContent.length > maxContentChars) {
         truncatedContent =
-            truncatedContent.slice(0, MAX_FILE_CONTENT_CHARS) +
-                "\n... [file truncated] ...";
+            truncatedContent.slice(0, maxContentChars) + "\n... [file truncated] ...";
     }
     const contentSection = truncatedContent
         ? `Content after the changes (context only — do not review unchanged code):
@@ -385,9 +413,11 @@ ${diffContent}
 
 ${contentSection}`;
 }
-function createPromptForBatch(batch, prDetails) {
+function createPromptForBatch(batch, prDetails, fileContentCap) {
     const paths = batch.map((t) => `- ${t.file.to}`).join("\n");
-    const sections = batch.map(describeTarget).join("\n\n---\n\n");
+    const sections = batch
+        .map((target) => describeTarget(target, fileContentCap))
+        .join("\n\n---\n\n");
     return `Review the changes to the following ${batch.length} file(s) from this pull request, as one connected change. Respond with the JSON format defined in your instructions, tagging every finding with the "file" it belongs to.
 
 Files in this review:
