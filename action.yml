@@ -15,6 +15,10 @@ inputs:
     description: "Glob patterns to exclude files from the diff analysis"
     required: false
     default: ""
+  MAX_CONTEXT_TOKENS:
+    description: "Context window of the chosen model, in tokens. Set this when the model is newer than the action's built-in table, or to deliberately review fewer files per request."
+    required: false
+    default: ""
 runs:
   using: "node20"
   main: "dist/index.js"

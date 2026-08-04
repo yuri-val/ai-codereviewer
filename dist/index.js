@@ -51,9 +51,60 @@ const minimatch_1 = __nccwpck_require__(4501);
 const GITHUB_TOKEN = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY = core.getInput("OPENAI_API_KEY");
 const OPENAI_API_MODEL = core.getInput("OPENAI_API_MODEL");
-// How many files are reviewed concurrently. Keeps large PRs fast without
-// hammering the OpenAI / GitHub rate limits.
+// How many review requests run concurrently. With batching most PRs need a
+// single request, so this only matters for PRs too large for one context.
 const FILE_CONCURRENCY = 3;
+// Context window (total tokens, input + output) per model. Used to decide how
+// many files travel in one review request.
+//
+// These are best-effort figures: OpenAI publishes no API to query them, so the
+// table has to be maintained by hand and will drift as models are released.
+// Nothing load-bearing depends on it being right — a request that overflows is
+// caught and the batch is split (see ContextOverflowError). Treat the numbers
+// as a starting point and override with MAX_CONTEXT_TOKENS when in doubt.
+const MODEL_CONTEXT_WINDOWS = {
+    "gpt-3.5-turbo": 16385,
+    "gpt-4": 8192,
+    "gpt-4-32k": 32768,
+    "gpt-4-turbo": 128000,
+    "gpt-4o": 128000,
+    "gpt-4o-mini": 128000,
+    "gpt-4.1": 1047576,
+    "gpt-4.1-mini": 1047576,
+    "gpt-4.1-nano": 1047576,
+    o1: 200000,
+    "o1-mini": 128000,
+    o3: 200000,
+    "o3-mini": 200000,
+    "o4-mini": 200000,
+};
+// Family fallbacks for versioned or dated model names ("gpt-4o-2024-08-06",
+// "gpt-5.6-luna"). Longest prefix wins, so put specific families first.
+const MODEL_CONTEXT_PREFIXES = [
+    ["gpt-4.1", 1047576],
+    ["gpt-4o", 128000],
+    ["gpt-4-turbo", 128000],
+    ["gpt-4-32k", 32768],
+    ["gpt-4", 8192],
+    ["gpt-3.5", 16385],
+    ["gpt-5", 400000],
+    ["o1-mini", 128000],
+    ["o1", 200000],
+    ["o3", 200000],
+    ["o4", 200000],
+];
+// Used when the model is unknown to both lookups. Deliberately modest: every
+// model worth using today has at least this much, and guessing low only costs
+// an extra request or two.
+const DEFAULT_CONTEXT_WINDOW = 128000;
+// Rough token estimate. Code averages a little under 4 characters per token;
+// this is only used to pack batches, and the packing leaves enough headroom
+// that a 10-20% error changes nothing.
+const CHARS_PER_TOKEN = 4;
+// Share of the context window a single request may fill with files. The rest
+// covers the completion (see COMPLETION_TOKEN_BUDGETS), the system prompt and
+// the slack in the character-based token estimate.
+const INPUT_BUDGET_RATIO = 0.6;
 // Full file content is context, not the review target — cap it so a single
 // huge file can't blow the model's context window and fail the request.
 const MAX_FILE_CONTENT_CHARS = 60000;
@@ -67,6 +118,10 @@ const octokit = new rest_1.Octokit({ auth: GITHUB_TOKEN });
 const openai = new openai_1.default({
     apiKey: OPENAI_API_KEY,
 });
+// Thrown when the model rejects a request for being too long. The table above
+// is a guess, so the batch is split and retried rather than trusted.
+class ContextOverflowError extends Error {
+}
 function getPRDetails(eventData) {
     return __awaiter(this, void 0, void 0, function* () {
         var _a, _b;
@@ -142,41 +197,113 @@ function getCommentableLines(file) {
     }
     return { added, context };
 }
+function resolveContextWindow(model) {
+    const override = Number(core.getInput("MAX_CONTEXT_TOKENS"));
+    if (Number.isFinite(override) && override > 0) {
+        return override;
+    }
+    const name = model.trim().toLowerCase();
+    if (MODEL_CONTEXT_WINDOWS[name]) {
+        return MODEL_CONTEXT_WINDOWS[name];
+    }
+    const match = MODEL_CONTEXT_PREFIXES.filter(([prefix]) => name.startsWith(prefix)).sort((a, b) => b[0].length - a[0].length)[0];
+    if (match) {
+        return match[1];
+    }
+    console.warn(`Unknown context window for model "${model}", assuming ${DEFAULT_CONTEXT_WINDOW} tokens. Set MAX_CONTEXT_TOKENS to review more files per request.`);
+    return DEFAULT_CONTEXT_WINDOW;
+}
+function estimateTokens(text) {
+    return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+// Groups files so each request carries as many as its model can hold. A file
+// whose own material exceeds the budget still gets a batch of its own — the
+// prompt truncates its content, and the diff is what matters anyway.
+function packIntoBatches(targets, budgetTokens) {
+    const batches = [];
+    let current = [];
+    let currentTokens = 0;
+    for (const target of targets) {
+        const cost = estimateTokens(describeTarget(target));
+        if (current.length > 0 && currentTokens + cost > budgetTokens) {
+            batches.push(current);
+            current = [];
+            currentTokens = 0;
+        }
+        current.push(target);
+        currentTokens += cost;
+    }
+    if (current.length > 0) {
+        batches.push(current);
+    }
+    return batches;
+}
 function analyzeCode(parsedDiff, prDetails) {
     return __awaiter(this, void 0, void 0, function* () {
         const reviewableFiles = parsedDiff.filter((file) => file.to &&
             file.to !== "/dev/null" && // deleted files
             getCommentableLines(file).added.size > 0);
-        const results = yield mapWithConcurrency(reviewableFiles, FILE_CONCURRENCY, (file) => analyzeFile(file, prDetails));
+        const targets = yield mapWithConcurrency(reviewableFiles, FILE_CONCURRENCY, (file) => __awaiter(this, void 0, void 0, function* () {
+            return ({
+                file,
+                content: yield getFileContent(prDetails.owner, prDetails.repo, file.to, `refs/pull/${prDetails.pull_number}/head`),
+            });
+        }));
+        const contextWindow = resolveContextWindow(OPENAI_API_MODEL);
+        const budgetTokens = Math.floor(contextWindow * INPUT_BUDGET_RATIO);
+        const batches = packIntoBatches(targets, budgetTokens);
+        console.log(`Reviewing ${targets.length} file(s) in ${batches.length} request(s) — model "${OPENAI_API_MODEL}", ~${contextWindow} token context, ${budgetTokens} tokens of files per request.`);
+        const results = yield mapWithConcurrency(batches, FILE_CONCURRENCY, (batch) => analyzeBatch(batch, prDetails));
         return results.flat();
     });
 }
-function analyzeFile(file, prDetails) {
+function analyzeBatch(batch, prDetails) {
     return __awaiter(this, void 0, void 0, function* () {
+        var _a;
         try {
-            const fileContent = yield getFileContent(prDetails.owner, prDetails.repo, file.to, `refs/pull/${prDetails.pull_number}/head`);
-            const prompt = createPromptForFile(file, prDetails, fileContent);
+            const prompt = createPromptForBatch(batch, prDetails);
             const aiReviews = yield getAIResponse(prompt);
-            return createCommentsForFile(file, aiReviews);
+            return createCommentsForBatch(batch, aiReviews);
         }
         catch (error) {
-            console.error(`Error analyzing "${file.to}", skipping file:`, error);
+            // The context table is a guess; if it was too generous, halve the batch
+            // and try again instead of losing the review for these files.
+            if (error instanceof ContextOverflowError && batch.length > 1) {
+                const middle = Math.ceil(batch.length / 2);
+                console.warn(`Batch of ${batch.length} file(s) exceeded the model context, splitting.`);
+                const halves = yield Promise.all([
+                    analyzeBatch(batch.slice(0, middle), prDetails),
+                    analyzeBatch(batch.slice(middle), prDetails),
+                ]);
+                return halves.flat();
+            }
+            // A single file that still does not fit: drop its content and review the
+            // diff alone, which is the part that actually needs reviewing. Without
+            // this, one oversized file on a small-context model gets no review at all.
+            if (error instanceof ContextOverflowError && ((_a = batch[0]) === null || _a === void 0 ? void 0 : _a.content)) {
+                console.warn(`"${batch[0].file.to}" does not fit with its content, reviewing the diff alone.`);
+                return analyzeBatch([{ file: batch[0].file, content: null }], prDetails);
+            }
+            const names = batch.map((t) => t.file.to).join(", ");
+            console.error(`Error analyzing "${names}", skipping:`, error);
             return [];
         }
     });
 }
-const SYSTEM_PROMPT = `You are an expert senior software engineer performing a rigorous review of a GitHub pull request. You review one file at a time and report only issues that genuinely matter.
+const SYSTEM_PROMPT = `You are an expert senior software engineer performing a rigorous review of a GitHub pull request. You are given a set of changed files together and report only issues that genuinely matter.
 
 ## Output format
 
 Respond ONLY with valid JSON in exactly this shape, with no extra text:
-{"reviews": [{"lineNumber": <number>, "severity": "critical" | "major", "reviewComment": "<GitHub Markdown comment>"}]}
+{"reviews": [{"file": "<path exactly as given>", "lineNumber": <number>, "severity": "critical" | "major", "reviewComment": "<GitHub Markdown comment>"}]}
+
+"file" must be copied verbatim from the "### File: <path>" heading the finding belongs to. A comment whose path does not match one of the given files is discarded.
 
 If there are no qualifying issues, respond with {"reviews": []}. Most files in a maintained pull request contain no critical or major issue, so an empty list is the single most common correct answer — never invent problems to have something to say. If you have produced more than two findings for one file, re-read them and keep only those you could defend by quoting the lines you were given.
 
 ## Only report what the material in front of you proves
 
-You are given ONE file: its diff and its own content. You cannot see the modules it imports, its callers, the classes it inherits from, the tests that cover it, or the result of running anything.
+You are given the files listed below — each one's diff and, where available, its content. Use all of them: if one of them settles a question about another, that is exactly what they are there for, and a finding proven across two given files is among the most valuable you can report. Anything outside that list you cannot see: modules that are not included, callers elsewhere in the repository, base classes, tests, or the result of running anything.
 
 - Report a finding only if the material you were given is enough to prove it. If confirming it would require reading code you were not shown, do not report it.
 - A conditional is not a finding. If the comment needs "if", "may", "could", "assuming", "unless the implementation…", or "please verify that…", then you have a question rather than a finding — drop it.
@@ -219,7 +346,10 @@ Do not comment on test structure, naming, setup style, missing coverage, or the 
 - Name the symbol or quote the fragment you are judging, so a mis-anchored comment is obvious to the reader instead of reading as authoritative.
 - If many issues qualify, report only the most impactful ones — at most 7 per file.
 - NEVER: praise the code, comment on style/formatting/naming, suggest adding code comments or documentation, restate what the code does, make vague suggestions ("consider improving..."), or report an issue you are not confident is real.`;
-function createPromptForFile(file, prDetails, fileContent) {
+// Renders one file's section of the prompt. Also used to size batches, so the
+// packing measures exactly the text that will be sent.
+function describeTarget(target) {
+    const { file, content } = target;
     const diffContent = file.chunks
         .map((chunk) => {
         const lines = chunk.changes.map((c) => {
@@ -232,20 +362,36 @@ function createPromptForFile(file, prDetails, fileContent) {
         return [chunk.content, ...lines].join("\n");
     })
         .join("\n");
-    let truncatedContent = fileContent;
+    let truncatedContent = content;
     if (truncatedContent && truncatedContent.length > MAX_FILE_CONTENT_CHARS) {
         truncatedContent =
             truncatedContent.slice(0, MAX_FILE_CONTENT_CHARS) +
                 "\n... [file truncated] ...";
     }
-    const fileContextSection = truncatedContent
-        ? `Full content of "${file.to}" after the changes (context only — do not review unchanged code):
+    const contentSection = truncatedContent
+        ? `Content after the changes (context only — do not review unchanged code):
 
 \`\`\`
 ${truncatedContent}
 \`\`\``
-        : `(Full file content is not available; review the diff on its own.)`;
-    return `Review the changes to the file "${file.to}" from this pull request. Respond with the JSON format defined in your instructions.
+        : `(Content is not available; review the diff on its own.)`;
+    return `### File: ${file.to}
+
+Diff:
+
+\`\`\`diff
+${diffContent}
+\`\`\`
+
+${contentSection}`;
+}
+function createPromptForBatch(batch, prDetails) {
+    const paths = batch.map((t) => `- ${t.file.to}`).join("\n");
+    const sections = batch.map(describeTarget).join("\n\n---\n\n");
+    return `Review the changes to the following ${batch.length} file(s) from this pull request, as one connected change. Respond with the JSON format defined in your instructions, tagging every finding with the "file" it belongs to.
+
+Files in this review:
+${paths}
 
 Pull request title: ${prDetails.title}
 
@@ -254,31 +400,37 @@ Pull request description (context only):
 ${prDetails.description}
 ---
 
-Git diff to review. Format: <new-file line number><TAB><diff line>; deleted lines have no line number. Comment only on "+" lines, using their line number:
+Each file below is given as a diff followed by its content. In the diffs the format is: <new-file line number><TAB><diff line>; deleted lines have no line number. Comment only on "+" lines, using their line number.
 
-\`\`\`diff
-${diffContent}
-\`\`\`
-
-${fileContextSection}`;
+${sections}`;
 }
-function createCommentsForFile(file, aiReviews) {
-    const { added, context } = getCommentableLines(file);
-    return aiReviews
-        .filter((review) => {
-        const line = Number(review.lineNumber);
-        if (!Number.isInteger(line) || (!added.has(line) && !context.has(line))) {
-            console.warn(`Dropping comment for "${file.to}" — line ${review.lineNumber} is not part of the diff.`);
-            return false;
+function createCommentsForBatch(batch, aiReviews) {
+    var _a;
+    // Line validity is per file, so each finding is checked against the diff of
+    // the file it names — a comment naming a file outside this batch is dropped.
+    const byPath = new Map(batch.map((t) => [t.file.to, getCommentableLines(t.file)]));
+    const comments = [];
+    for (const review of aiReviews) {
+        const path = (_a = review.file) === null || _a === void 0 ? void 0 : _a.trim();
+        const lines = path ? byPath.get(path) : undefined;
+        if (!lines) {
+            console.warn(`Dropping comment for "${review.file}" — not one of the files under review.`);
+            continue;
         }
-        return true;
-    })
-        .map((review) => ({
-        body: `${review.severity === "critical" ? "🔴" : "🟠"} ${review.reviewComment}`,
-        path: file.to,
-        line: Number(review.lineNumber),
-        side: "RIGHT",
-    }));
+        const line = Number(review.lineNumber);
+        if (!Number.isInteger(line) ||
+            (!lines.added.has(line) && !lines.context.has(line))) {
+            console.warn(`Dropping comment for "${path}" — line ${review.lineNumber} is not part of the diff.`);
+            continue;
+        }
+        comments.push({
+            body: `${review.severity === "critical" ? "🔴" : "🟠"} ${review.reviewComment}`,
+            path,
+            line,
+            side: "RIGHT",
+        });
+    }
+    return comments;
 }
 function parseAIReviews(raw) {
     let text = raw.trim();
@@ -293,6 +445,8 @@ function parseAIReviews(raw) {
             return [];
         }
         return parsed.reviews.filter((r) => r &&
+            typeof r.file === "string" &&
+            r.file.trim() !== "" &&
             typeof r.reviewComment === "string" &&
             r.reviewComment.trim() !== "" &&
             Number.isFinite(Number(r.lineNumber)));
@@ -301,6 +455,21 @@ function parseAIReviews(raw) {
         console.error("Failed to parse AI response as JSON:", text.slice(0, 500));
         return [];
     }
+}
+// OpenAI reports an oversized request as a 400 with code
+// "context_length_exceeded"; older/proxied deployments only say so in the
+// message, so both are checked.
+function isContextOverflow(error) {
+    var _a, _b, _c;
+    const code = (_a = error === null || error === void 0 ? void 0 : error.code) !== null && _a !== void 0 ? _a : (_b = error === null || error === void 0 ? void 0 : error.error) === null || _b === void 0 ? void 0 : _b.code;
+    if (code === "context_length_exceeded") {
+        return true;
+    }
+    const message = String((_c = error === null || error === void 0 ? void 0 : error.message) !== null && _c !== void 0 ? _c : "").toLowerCase();
+    return (message.includes("context length") ||
+        message.includes("context_length") ||
+        message.includes("maximum context") ||
+        message.includes("too many tokens"));
 }
 function getAIResponse(prompt) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -329,6 +498,11 @@ function getAIResponse(prompt) {
                 return parseAIReviews((_b = (_a = choice === null || choice === void 0 ? void 0 : choice.message) === null || _a === void 0 ? void 0 : _a.content) !== null && _b !== void 0 ? _b : "{}");
             }
             catch (error) {
+                // Surfaced so the caller can split the batch — the context table is a
+                // hand-maintained guess and this is how being wrong gets corrected.
+                if (isContextOverflow(error)) {
+                    throw new ContextOverflowError(error instanceof Error ? error.message : String(error));
+                }
                 console.error("OpenAI request failed:", error);
                 return [];
             }
@@ -449,7 +623,7 @@ function main() {
             return !excludePatterns.some((pattern) => { var _a; return (0, minimatch_1.minimatch)((_a = file.to) !== null && _a !== void 0 ? _a : "", pattern); });
         });
         const comments = yield analyzeCode(filteredDiff, prDetails);
-        console.log(`Reviewed ${filteredDiff.length} file(s), produced ${comments.length} comment(s).`);
+        console.log(`Produced ${comments.length} comment(s).`);
         if (comments.length > 0) {
             yield createReviewComment(prDetails.owner, prDetails.repo, prDetails.pull_number, comments);
         }

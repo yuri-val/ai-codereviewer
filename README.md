@@ -26,6 +26,23 @@ Customize the behavior of AI Code Reviewer using the following inputs in your wo
 - `OPENAI_API_KEY`: Required. Your OpenAI API key.
 - `OPENAI_API_MODEL`: Optional. The specific OpenAI model to use. Default is "gpt-5.6-luna".
 - `exclude`: Optional. A comma-separated list of file patterns to exclude from review.
+- `MAX_CONTEXT_TOKENS`: Optional. The context window of the chosen model, in tokens.
+
+### How much is reviewed at once
+
+The action packs as many changed files into a single request as the model's
+context window allows, so the model sees a change as a whole and can confirm a
+finding in one file against another. Most pull requests fit in one request;
+larger ones are split into as few as possible.
+
+Model context windows are looked up from a table built into the action, with a
+fallback per model family (`gpt-4o…`, `gpt-5…`) and a conservative default for
+names it does not recognise. OpenAI publishes no API for these figures, so the
+table is maintained by hand and can lag behind new releases — set
+`MAX_CONTEXT_TOKENS` to state the window explicitly for a model it gets wrong,
+or to deliberately review fewer files per request. A request that overflows
+anyway is not lost: the batch is split and retried, and a single file that still
+does not fit is reviewed from its diff without its full content.
 
 ## Setup
 
