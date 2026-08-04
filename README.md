@@ -4,7 +4,7 @@ AI Code Reviewer is a GitHub Action that leverages the OpenAI API to provide int
 
 ## Features
 
-- Reviews each changed file with its full content as context, not just the diff
+- Reviews as many changed files together as the model's context window allows — usually the whole pull request in one request — each with its full content as context, not just the diff
 - Reports only critical (🔴) and major (🟠) issues: bugs, security, data integrity, performance, reliability — no nitpicks or style comments
 - Includes GitHub suggestion blocks for one-line fixes where possible
 - Validates AI-proposed line numbers against the diff, so comments always anchor correctly
@@ -35,14 +35,33 @@ context window allows, so the model sees a change as a whole and can confirm a
 finding in one file against another. Most pull requests fit in one request;
 larger ones are split into as few as possible.
 
-Model context windows are looked up from a table built into the action, with a
-fallback per model family (`gpt-4o…`, `gpt-5…`) and a conservative default for
-names it does not recognise. OpenAI publishes no API for these figures, so the
-table is maintained by hand and can lag behind new releases — set
-`MAX_CONTEXT_TOKENS` to state the window explicitly for a model it gets wrong,
-or to deliberately review fewer files per request. A request that overflows
-anyway is not lost: the batch is split and retried, and a single file that still
-does not fit is reviewed from its diff without its full content.
+Model context windows are looked up from a table built into the action
+(figures from the OpenAI model reference, checked 2026-08-04):
+
+| Model                                                     | Context window    |
+| --------------------------------------------------------- | ----------------- |
+| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` | 1,050,000         |
+| `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`                 | 1,047,576         |
+| `gpt-5`, `gpt-5.1`                                        | 400,000           |
+| `o1`, `o3`, `o3-mini`, `o4-mini`                          | 200,000           |
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1-mini`         | 128,000           |
+| `gpt-4-32k`                                               | 32,768            |
+| `gpt-3.5-turbo`                                           | 16,385            |
+| `gpt-4`                                                   | 8,192             |
+| anything else                                             | 128,000 (assumed) |
+
+Dated and suffixed names (`gpt-4o-2024-08-06`) resolve through their family
+prefix. A request may fill 60% of the window with files, leaving room for the
+reply, the instructions and the error in the character-based token estimate;
+on a million-token model that is roughly 2.5M characters of diff and content,
+which is more than most pull requests contain.
+
+OpenAI publishes no API for these figures, so the table is maintained by hand
+and can lag behind new releases — set `MAX_CONTEXT_TOKENS` to state the window
+explicitly for a model it gets wrong, or to deliberately review fewer files per
+request. A request that overflows anyway is not lost: the batch is split and
+retried, and a single file that still does not fit is reviewed from its diff
+without its full content.
 
 ## Setup
 
@@ -93,7 +112,7 @@ The AI Code Reviewer GitHub Action:
 
 1. Retrieves the pull request diff (or, on `synchronize`, only the newly pushed commits)
 2. Filters out excluded files and files with nothing new to review (e.g. pure deletions)
-3. For each remaining file, sends the annotated diff plus the full file content (truncated if very large) to the OpenAI API — several files are processed in parallel
+3. Packs the remaining files into as few requests as the model's context window allows, sending each file's annotated diff plus its full content (truncated if very large) to the OpenAI API — requests are processed in parallel
 4. Parses and validates the AI's JSON response, dropping comments that don't map to a line in the diff
 5. Posts the surviving comments to the pull request as a review, tagged 🔴 (critical) or 🟠 (major)
 
