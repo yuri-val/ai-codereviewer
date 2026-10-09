@@ -10,10 +10,12 @@
     "package": "ncc build --source-map --license licenses.txt",
     "format": "prettier --write .",
     "lint": "prettier --check .",
-    "git_pub": "./git_pub.sh"
+    "git_pub": "./git_pub.sh",
+    "test": "node --require ts-node/register --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@actions/core": "^1.11.1",
+    "@anthropic-ai/sdk": "^0.133.0",
     "@octokit/rest": "^21.0.0",
     "minimatch": "^9.0.7",
     "openai": "^4.104.0",

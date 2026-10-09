@@ -1,71 +1,30 @@
 import { readFileSync } from "fs";
 import * as core from "@actions/core";
-import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
 import parseDiff, { Change, File } from "parse-diff";
 import { minimatch } from "minimatch";
+import { parseJsonAnswer } from "./parse";
+import {
+  ContextOverflowError,
+  createProvider,
+  Provider,
+  resolveProviderConfig,
+} from "./providers";
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
-const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
-const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
+
+// The model provider (openai, claude or open-router) and its credentials,
+// from the action inputs or, failing those, the environment.
+const provider: Provider = createProvider(
+  resolveProviderConfig((name) => core.getInput(name), process.env),
+);
 
 // How many review requests run concurrently. With batching most PRs need a
 // single request, so this only matters for PRs too large for one context.
 const FILE_CONCURRENCY = 3;
 
-// Context window (total tokens, input + output) per model. Used to decide how
-// many files travel in one review request.
-//
-// Figures from developers.openai.com/api/docs/models (checked 2026-08-04).
-// OpenAI publishes no API to query them, so this table is maintained by hand
-// and will drift as models are released. Nothing load-bearing depends on it
-// being right — a request that overflows is caught and the batch is split (see
-// ContextOverflowError) — but a stale entry costs extra requests, so override
-// with MAX_CONTEXT_TOKENS for a model newer than this comment.
-const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  "gpt-3.5-turbo": 16_385,
-  "gpt-4": 8_192,
-  "gpt-4-32k": 32_768,
-  "gpt-4-turbo": 128_000,
-  "gpt-4o": 128_000,
-  "gpt-4o-mini": 128_000,
-  "gpt-4.1": 1_047_576,
-  "gpt-4.1-mini": 1_047_576,
-  "gpt-4.1-nano": 1_047_576,
-  "gpt-5": 400_000,
-  "gpt-5.1": 400_000,
-  "gpt-5.5": 1_050_000,
-  "gpt-5.6": 1_050_000,
-  "gpt-5.6-sol": 1_050_000,
-  "gpt-5.6-terra": 1_050_000,
-  "gpt-5.6-luna": 1_050_000,
-  o1: 200_000,
-  "o1-mini": 128_000,
-  o3: 200_000,
-  "o3-mini": 200_000,
-  "o4-mini": 200_000,
-};
-
-// Family fallbacks for versioned or dated model names ("gpt-4o-2024-08-06",
-// "gpt-5.6-luna-preview"). Longest prefix wins, so put specific families
-// first — "gpt-5.6" must be tried before "gpt-5", which is a different window.
-const MODEL_CONTEXT_PREFIXES: Array<[string, number]> = [
-  ["gpt-4.1", 1_047_576],
-  ["gpt-4o", 128_000],
-  ["gpt-4-turbo", 128_000],
-  ["gpt-4-32k", 32_768],
-  ["gpt-4", 8_192],
-  ["gpt-3.5", 16_385],
-  ["gpt-5.6", 1_050_000],
-  ["gpt-5.5", 1_050_000],
-  ["gpt-5", 400_000],
-  ["o1-mini", 128_000],
-  ["o1", 200_000],
-  ["o3", 200_000],
-  ["o4", 200_000],
-];
-
-// Used when the model is unknown to both lookups. Deliberately modest: every
+// Used when neither MAX_CONTEXT_TOKENS nor the provider knows the model's
+// context window. Deliberately modest: every
 // model worth using today has at least this much, and guessing low only costs
 // an extra request or two.
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -93,12 +52,6 @@ const MIN_INPUT_BUDGET_TOKENS = 2_000;
 // million-token one, where a long file can travel whole.
 const MIN_FILE_CONTENT_CHARS = 60_000;
 const FILE_CONTENT_BUDGET_SHARE = 0.1;
-// Completion budgets: retry once with a bigger budget if the model ran out
-// of tokens mid-JSON (finish_reason === "length"). Reasoning models like
-// gpt-5.6-luna spend completion tokens on internal reasoning before emitting
-// JSON, so a small starting budget would make truncation-retries the common
-// path and double latency/cost per file.
-const COMPLETION_TOKEN_BUDGETS = [4_000, 8_000];
 
 // Files never sent to OpenAI, whatever the `exclude` input says: their content
 // is a secret, not something to review.
@@ -127,15 +80,6 @@ const SENSITIVE_FILE_PATTERNS = [
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
-// The SDK retries connection errors, timeouts, 408/409/429 and 5xx with
-// backoff and honours Retry-After. The timeout is per attempt: without it a
-// hung request would hold the job for the SDK's 10-minute default per try.
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  timeout: 5 * 60_000,
-  maxRetries: 4,
-});
-
 interface PRDetails {
   owner: string;
   repo: string;
@@ -157,10 +101,6 @@ interface ReviewTarget {
   file: File;
   content: string | null;
 }
-
-// Thrown when the model rejects a request for being too long. The table above
-// is a guess, so the batch is split and retried rather than trusted.
-class ContextOverflowError extends Error {}
 
 interface ReviewComment {
   body: string;
@@ -334,27 +274,19 @@ function restrictToPushedLines(
   });
 }
 
-function resolveContextWindow(model: string): number {
+async function resolveContextWindow(): Promise<number> {
   const override = Number(core.getInput("MAX_CONTEXT_TOKENS"));
   if (Number.isFinite(override) && override > 0) {
     return override;
   }
 
-  const name = model.trim().toLowerCase();
-  if (MODEL_CONTEXT_WINDOWS[name]) {
-    return MODEL_CONTEXT_WINDOWS[name];
-  }
-
-  const match = MODEL_CONTEXT_PREFIXES.filter(([prefix]) =>
-    name.startsWith(prefix),
-  ).sort((a, b) => b[0].length - a[0].length)[0];
-
-  if (match) {
-    return match[1];
+  const known = await provider.contextWindow();
+  if (known) {
+    return known;
   }
 
   console.warn(
-    `Unknown context window for model "${model}", assuming ${DEFAULT_CONTEXT_WINDOW} tokens. Set MAX_CONTEXT_TOKENS to review more files per request.`,
+    `Unknown context window for model "${provider.model}", assuming ${DEFAULT_CONTEXT_WINDOW} tokens. Set MAX_CONTEXT_TOKENS to review more files per request.`,
   );
   return DEFAULT_CONTEXT_WINDOW;
 }
@@ -436,13 +368,13 @@ async function analyzeCode(
     }),
   );
 
-  const contextWindow = resolveContextWindow(OPENAI_API_MODEL);
+  const contextWindow = await resolveContextWindow();
   const budgetTokens = resolveInputBudget(contextWindow);
   const fileContentCap = resolveFileContentCap(budgetTokens);
   const batches = packIntoBatches(targets, budgetTokens, fileContentCap);
 
   console.log(
-    `Reviewing ${targets.length} file(s) in ${batches.length} request(s) — model "${OPENAI_API_MODEL}", ~${contextWindow} token context, ${budgetTokens} tokens of files per request, up to ${fileContentCap} chars of content per file.`,
+    `Reviewing ${targets.length} file(s) in ${batches.length} request(s) — ${provider.name} model "${provider.model}", ~${contextWindow} token context, ${budgetTokens} tokens of files per request, up to ${fileContentCap} chars of content per file.`,
   );
 
   const results = await mapWithConcurrency(batches, FILE_CONCURRENCY, (batch) =>
@@ -670,85 +602,54 @@ function createCommentsForBatch(
 }
 
 function parseAIReviews(raw: string): AIReview[] {
-  let text = raw.trim();
-  // Some models wrap JSON in a markdown fence despite instructions.
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) {
-    text = fenced[1].trim();
-  }
-
-  try {
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed?.reviews)) {
-      return [];
-    }
-    return parsed.reviews.filter(
-      (r: any) =>
-        r &&
-        typeof r.file === "string" &&
-        r.file.trim() !== "" &&
-        typeof r.reviewComment === "string" &&
-        r.reviewComment.trim() !== "" &&
-        Number.isFinite(Number(r.lineNumber)),
-    );
-  } catch (error) {
-    console.error("Failed to parse AI response as JSON:", text.slice(0, 500));
+  const parsed: any = parseJsonAnswer(raw);
+  if (parsed === undefined) {
+    console.error("Failed to parse AI response as JSON:", raw.slice(0, 500));
     return [];
   }
-}
-
-// OpenAI reports an oversized request as a 400 with code
-// "context_length_exceeded"; older/proxied deployments only say so in the
-// message, so both are checked.
-function isContextOverflow(error: unknown): boolean {
-  const code = (error as any)?.code ?? (error as any)?.error?.code;
-  if (code === "context_length_exceeded") {
-    return true;
+  if (!Array.isArray(parsed?.reviews)) {
+    return [];
   }
-  const message = String((error as any)?.message ?? "").toLowerCase();
-  return (
-    message.includes("context length") ||
-    message.includes("context_length") ||
-    message.includes("maximum context") ||
-    message.includes("too many tokens")
+  return parsed.reviews.filter(
+    (r: any) =>
+      r &&
+      typeof r.file === "string" &&
+      r.file.trim() !== "" &&
+      typeof r.reviewComment === "string" &&
+      r.reviewComment.trim() !== "" &&
+      Number.isFinite(Number(r.lineNumber)),
   );
 }
 
 async function getAIResponse(prompt: string): Promise<AIReview[]> {
-  // GPT-5.x models reject the old chat-completions knobs: `max_tokens` was
-  // renamed to `max_completion_tokens`, and a custom `temperature` is not
-  // accepted (only the default). These models also spend completion tokens
-  // on internal reasoning before emitting JSON, so if the budget runs out
-  // (finish_reason === "length") we retry once with a bigger one.
-  for (const budget of COMPLETION_TOKEN_BUDGETS) {
+  // Reasoning models spend completion tokens on internal reasoning before the
+  // JSON, so if the budget runs out mid-answer, retry once with a bigger one.
+  for (const budget of provider.completionBudgets) {
     try {
-      const response = await openai.chat.completions.create({
-        model: OPENAI_API_MODEL,
-        max_completion_tokens: budget,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt },
-        ],
+      const started = Date.now();
+      const result = await provider.complete({
+        system: SYSTEM_PROMPT,
+        prompt,
+        maxTokens: budget,
       });
+      console.log(
+        `${provider.name} answered in ${((Date.now() - started) / 1000).toFixed(1)}s — ${result.usage.input} input / ${result.usage.output} output tokens.`,
+      );
 
-      const choice = response.choices[0];
-      if (choice?.finish_reason === "length") {
+      if (result.truncated) {
         console.warn(
           `AI response truncated at ${budget} completion tokens, retrying with a larger budget...`,
         );
         continue;
       }
-      return parseAIReviews(choice?.message?.content ?? "{}");
+      return parseAIReviews(result.text || "{}");
     } catch (error) {
-      // Surfaced so the caller can split the batch — the context table is a
-      // hand-maintained guess and this is how being wrong gets corrected.
-      if (isContextOverflow(error)) {
-        throw new ContextOverflowError(
-          error instanceof Error ? error.message : String(error),
-        );
+      // Surfaced so the caller can split the batch — the context window is a
+      // guess and this is how being wrong gets corrected.
+      if (error instanceof ContextOverflowError) {
+        throw error;
       }
-      console.error("OpenAI request failed:", error);
+      console.error(`${provider.name} request failed:`, error);
       return [];
     }
   }

@@ -29,6 +29,9 @@ jobs:
       - name: Formatting
         run: yarn lint
 
+      - name: Unit tests
+        run: yarn test
+
       - name: dist/ is up to date with the source
         run: |
           yarn build
