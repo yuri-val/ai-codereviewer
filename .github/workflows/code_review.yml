@@ -6,13 +6,14 @@ on:
       - reopened
       - ready_for_review
       - synchronize
-permissions: write-all
+# The action reads the PR through the API and posts a review: nothing more.
+permissions:
+  contents: read
+  pull-requests: write
 jobs:
   code_review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
       - name: Code Review
         uses: yuri-val/ai-codereviewer@main
         with:

@@ -80,13 +80,13 @@ on:
       - reopened
       - ready_for_review
       - synchronize
-permissions: write-all
+permissions:
+  contents: read
+  pull-requests: write
 jobs:
   code_review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
       - name: Code Review
         uses: yuri-val/ai-codereviewer@v4
         with:
@@ -96,7 +96,13 @@ jobs:
           exclude: "**/*.lock,dist/**,**/*.json,**/*.md"
 ```
 
-4. Customize the `exclude` input to ignore specific file patterns from review.
+4. Customize the `exclude` input to ignore specific file patterns from review. Secret-bearing
+   files (`.env*`, `*.pem`, `*.key`, `*.p12`/`*.pfx`/`*.jks`, SSH keys, `.npmrc`/`.netrc`,
+   `credentials.yml*`/`secrets.yml*`, ...) are always excluded and never sent to OpenAI.
+
+   No `actions/checkout` step is needed: the action reads everything through the GitHub API.
+   Use the `pull_request` trigger — not `pull_request_target`, which would hand a write token
+   and your OpenAI key to a run reviewing untrusted fork code.
 
 5. Commit the changes to your repository.
 
@@ -110,7 +116,9 @@ jobs:
 
 The AI Code Reviewer GitHub Action:
 
-1. Retrieves the pull request diff (or, on `synchronize`, only the newly pushed commits)
+1. Retrieves the pull request diff. On `synchronize` it reviews only the lines the new push
+   added (lines from earlier pushes stay visible as context, changes merged in from the base
+   branch are ignored); after a force-push or rebase the whole pull request is reviewed again
 2. Filters out excluded files and files with nothing new to review (e.g. pure deletions)
 3. Packs the remaining files into as few requests as the model's context window allows, sending each file's annotated diff plus its full content (truncated if very large) to the OpenAI API — requests are processed in parallel
 4. Parses and validates the AI's JSON response, dropping comments that don't map to a line in the diff
@@ -118,7 +126,7 @@ The AI Code Reviewer GitHub Action:
 
 ## Troubleshooting
 
-- If encountering rate limiting issues with the OpenAI API, consider implementing a retry mechanism or reducing the frequency of reviews.
+- OpenAI requests time out after 5 minutes and are retried (rate limits, 5xx, network errors) with backoff, honouring `Retry-After`.
 - Ensure that your `GITHUB_TOKEN` has the necessary permissions to comment on pull requests.
 - Check the Actions tab in your repository for detailed logs if the workflow fails.
 
