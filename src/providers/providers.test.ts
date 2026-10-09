@@ -65,6 +65,7 @@ test("a missing key names where to put it", () => {
 
 test("openai context table and overflow detection", () => {
   assert.strictEqual(lookupContextWindow("gpt-5.6-luna"), 1_050_000);
+  assert.strictEqual(lookupContextWindow("gpt-6-luna"), 1_050_000);
   assert.strictEqual(lookupContextWindow("gpt-4o-2024-08-06"), 128_000);
   assert.strictEqual(lookupContextWindow("mystery"), undefined);
   assert.ok(isContextOverflow({ code: "context_length_exceeded" }));

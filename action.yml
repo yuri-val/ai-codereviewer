@@ -8,7 +8,7 @@ inputs:
     description: "Model provider: openai, claude or open-router. Falls back to the AI_PROVIDER environment variable, then openai."
     required: false
   AI_MODEL:
-    description: "Model to use with the provider. Falls back to AI_MODEL, then the provider default (openai: gpt-5.6-luna, claude: claude-haiku-5-5, open-router: deepseek/deepseek-v4.1-flash)."
+    description: "Model to use with the provider. Falls back to AI_MODEL, then the provider default (openai: gpt-6-luna, claude: claude-haiku-5-5, open-router: deepseek/deepseek-v4.1-flash)."
     required: false
   OPENAI_API_KEY:
     description: "OpenAI API key (provider openai). Falls back to the OPENAI_API_KEY environment variable."

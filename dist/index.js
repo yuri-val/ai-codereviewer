@@ -951,11 +951,11 @@ exports.completeChat = completeChat;
 exports.createOpenAIProvider = createOpenAIProvider;
 const openai_1 = __importDefault(__nccwpck_require__(47));
 const types_1 = __nccwpck_require__(2933);
-exports.DEFAULT_MODEL = "gpt-5.6-luna";
+exports.DEFAULT_MODEL = "gpt-6-luna";
 // Context window (total tokens, input + output) per model. Used to decide how
 // many files travel in one review request.
 //
-// Figures from developers.openai.com/api/docs/models (checked 2026-10-09).
+// Figures from developers.openai.com/api/docs/models (checked 2026-10-10).
 // OpenAI publishes no API to query them, so this table is maintained by hand
 // and will drift as models are released. Nothing load-bearing depends on it
 // being right — a request that overflows is caught and the batch is split (see
@@ -978,6 +978,7 @@ const MODEL_CONTEXT_WINDOWS = {
     "gpt-5.6-sol": 1050000,
     "gpt-5.6-terra": 1050000,
     "gpt-5.6-luna": 1050000,
+    "gpt-6-luna": 1050000,
     o1: 200000,
     "o1-mini": 128000,
     o3: 200000,
@@ -994,6 +995,7 @@ const MODEL_CONTEXT_PREFIXES = [
     ["gpt-4-32k", 32768],
     ["gpt-4", 8192],
     ["gpt-3.5", 16385],
+    ["gpt-6-luna", 1050000],
     ["gpt-5.6", 1050000],
     ["gpt-5.5", 1050000],
     ["gpt-5", 400000],

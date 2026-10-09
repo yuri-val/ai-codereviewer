@@ -7,12 +7,12 @@ import {
   REVIEWS_SCHEMA,
 } from "./types";
 
-export const DEFAULT_MODEL = "gpt-5.6-luna";
+export const DEFAULT_MODEL = "gpt-6-luna";
 
 // Context window (total tokens, input + output) per model. Used to decide how
 // many files travel in one review request.
 //
-// Figures from developers.openai.com/api/docs/models (checked 2026-10-09).
+// Figures from developers.openai.com/api/docs/models (checked 2026-10-10).
 // OpenAI publishes no API to query them, so this table is maintained by hand
 // and will drift as models are released. Nothing load-bearing depends on it
 // being right — a request that overflows is caught and the batch is split (see
@@ -35,6 +35,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-5.6-sol": 1_050_000,
   "gpt-5.6-terra": 1_050_000,
   "gpt-5.6-luna": 1_050_000,
+  "gpt-6-luna": 1_050_000,
   o1: 200_000,
   "o1-mini": 128_000,
   o3: 200_000,
@@ -52,6 +53,7 @@ const MODEL_CONTEXT_PREFIXES: Array<[string, number]> = [
   ["gpt-4-32k", 32_768],
   ["gpt-4", 8_192],
   ["gpt-3.5", 16_385],
+  ["gpt-6-luna", 1_050_000],
   ["gpt-5.6", 1_050_000],
   ["gpt-5.5", 1_050_000],
   ["gpt-5", 400_000],

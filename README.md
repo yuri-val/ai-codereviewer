@@ -36,7 +36,7 @@ Customize the behavior of AI Code Reviewer using the following inputs in your wo
 
 | `AI_PROVIDER`      | Default model                  | Key (input, or environment variable)            | Output                                                       |
 | ------------------ | ------------------------------ | ----------------------------------------------- | ------------------------------------------------------------ |
-| `openai` (default) | `gpt-5.6-luna`                 | `OPENAI_API_KEY`                                | strict JSON schema                                           |
+| `openai` (default) | `gpt-6-luna`                   | `OPENAI_API_KEY`                                | strict JSON schema                                           |
 | `claude`           | `claude-haiku-5-5`             | `ANTHROPIC_API_KEY` (env also `CLAUDE_API_KEY`) | strict JSON schema (`output_config.format`)                  |
 | `open-router`      | `deepseek/deepseek-v4.1-flash` | `OPENROUTER_API_KEY`                            | strict JSON schema, routed only to endpoints that support it |
 
@@ -85,19 +85,19 @@ finding in one file against another. Most pull requests fit in one request;
 larger ones are split into as few as possible.
 
 Model context windows are looked up from a table built into the action
-(figures from the OpenAI model reference, checked 2026-08-04):
+for OpenAI (figures from the OpenAI model reference, checked 2026-10-10); Claude and OpenRouter report theirs through their APIs:
 
-| Model                                                     | Context window    |
-| --------------------------------------------------------- | ----------------- |
-| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` | 1,050,000         |
-| `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`                 | 1,047,576         |
-| `gpt-5`, `gpt-5.1`                                        | 400,000           |
-| `o1`, `o3`, `o3-mini`, `o4-mini`                          | 200,000           |
-| `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1-mini`         | 128,000           |
-| `gpt-4-32k`                                               | 32,768            |
-| `gpt-3.5-turbo`                                           | 16,385            |
-| `gpt-4`                                                   | 8,192             |
-| anything else                                             | 128,000 (assumed) |
+| Model                                                                   | Context window    |
+| ----------------------------------------------------------------------- | ----------------- |
+| `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` | 1,050,000         |
+| `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`                               | 1,047,576         |
+| `gpt-5`, `gpt-5.1`                                                      | 400,000           |
+| `o1`, `o3`, `o3-mini`, `o4-mini`                                        | 200,000           |
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1-mini`                       | 128,000           |
+| `gpt-4-32k`                                                             | 32,768            |
+| `gpt-3.5-turbo`                                                         | 16,385            |
+| `gpt-4`                                                                 | 8,192             |
+| anything else                                                           | 128,000 (assumed) |
 
 Dated and suffixed names (`gpt-4o-2024-08-06`) resolve through their family
 prefix. A request may fill 60% of the window with files, leaving room for the
@@ -141,7 +141,7 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_MODEL: "gpt-5.6-luna"
+          OPENAI_API_MODEL: "gpt-6-luna"
           exclude: "**/*.lock,dist/**,**/*.json,**/*.md"
 ```
 
