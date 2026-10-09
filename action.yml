@@ -1,16 +1,30 @@
 name: "Magic Review: OPENAI Code Review Action"
-description: "Perform code reviews and comment on diffs using OpenAI API."
+description: "Perform code reviews and comment on diffs using OpenAI, Claude or OpenRouter."
 inputs:
   GITHUB_TOKEN:
     description: "GitHub token to interact with the repository."
     required: true
-  OPENAI_API_KEY:
-    description: "OpenAI API key for GPT."
-    required: true
-  OPENAI_API_MODEL:
-    description: "OpenAI API model."
+  AI_PROVIDER:
+    description: "Model provider: openai, claude or open-router. Falls back to the AI_PROVIDER environment variable, then openai."
     required: false
-    default: "gpt-5.6-luna"
+  AI_MODEL:
+    description: "Model to use with the provider. Falls back to AI_MODEL, then the provider default (openai: gpt-5.6-luna, claude: claude-haiku-5-5, open-router: deepseek/deepseek-v4.1-flash)."
+    required: false
+  OPENAI_API_KEY:
+    description: "OpenAI API key (provider openai). Falls back to the OPENAI_API_KEY environment variable."
+    required: false
+  OPENAI_API_MODEL:
+    description: "Deprecated alias of AI_MODEL for the openai provider."
+    required: false
+  ANTHROPIC_API_KEY:
+    description: "Anthropic API key (provider claude). Falls back to ANTHROPIC_API_KEY or CLAUDE_API_KEY."
+    required: false
+  ANTHROPIC_WORKSPACE_ID:
+    description: "Anthropic workspace ID — only for keys that are not scoped to a workspace. Falls back to ANTHROPIC_WORKSPACE_ID."
+    required: false
+  OPENROUTER_API_KEY:
+    description: "OpenRouter API key (provider open-router). Falls back to OPENROUTER_API_KEY."
+    required: false
   exclude:
     description: "Glob patterns to exclude files from the diff analysis"
     required: false
